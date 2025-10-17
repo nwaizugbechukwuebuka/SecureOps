@@ -1,13 +1,14 @@
 """
 Base database model with common fields and configurations.
 """
+
 from datetime import datetime
-from typing import Optional, Any
-from sqlalchemy import Column, Integer, DateTime, String, func
+from typing import Any, Optional
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Column, DateTime, Integer, String, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import declarative_mixin
-from pydantic import BaseModel, ConfigDict
-
 
 Base = declarative_base()
 
@@ -15,32 +16,30 @@ Base = declarative_base()
 @declarative_mixin
 class TimestampMixin:
     """Mixin to add created_at and updated_at timestamps to models."""
-    
+
     created_at = Column(
-        DateTime(timezone=True), 
-        server_default=func.now(), 
-        nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(
-        DateTime(timezone=True), 
-        server_default=func.now(), 
+        DateTime(timezone=True),
+        server_default=func.now(),
         onupdate=func.now(),
-        nullable=False
+        nullable=False,
     )
 
 
 @declarative_mixin
 class IDMixin:
     """Mixin to add primary key ID field."""
-    
+
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
 
 class BaseResponse(BaseModel):
     """Base Pydantic model for API responses."""
-    
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -48,31 +47,28 @@ class BaseResponse(BaseModel):
 
 class PaginationParams(BaseModel):
     """Standard pagination parameters."""
-    
+
     skip: int = 0
     limit: int = 100
-    
+
     class Config:
-        schema_extra = {
-            "example": {
-                "skip": 0,
-                "limit": 20
-            }
-        }
+        schema_extra = {"example": {"skip": 0, "limit": 20}}
 
 
 class PaginatedResponse(BaseModel):
     """Standard paginated response wrapper."""
-    
+
     items: list[Any]
     total: int
     skip: int
     limit: int
     has_next: bool
     has_prev: bool
-    
+
     @classmethod
-    def create(cls, items: list, total: int, skip: int, limit: int) -> "PaginatedResponse":
+    def create(
+        cls, items: list, total: int, skip: int, limit: int
+    ) -> "PaginatedResponse":
         """Create a paginated response."""
         return cls(
             items=items,
@@ -80,25 +76,29 @@ class PaginatedResponse(BaseModel):
             skip=skip,
             limit=limit,
             has_next=skip + limit < total,
-            has_prev=skip > 0
+            has_prev=skip > 0,
         )
 
 
 class APIResponse(BaseModel):
     """Standard API response wrapper."""
-    
+
     success: bool
     message: str
     data: Optional[Any] = None
     errors: Optional[list[str]] = None
-    
+
     @classmethod
-    def success_response(cls, data: Any = None, message: str = "Success") -> "APIResponse":
+    def success_response(
+        cls, data: Any = None, message: str = "Success"
+    ) -> "APIResponse":
         """Create a success response."""
         return cls(success=True, message=message, data=data)
-    
+
     @classmethod
-    def error_response(cls, message: str, errors: Optional[list[str]] = None) -> "APIResponse":
+    def error_response(
+        cls, message: str, errors: Optional[list[str]] = None
+    ) -> "APIResponse":
         """Create an error response."""
         return cls(success=False, message=message, errors=errors or [])
 
@@ -106,6 +106,7 @@ class APIResponse(BaseModel):
 # Enums for consistent status values
 class SeverityLevel:
     """Security vulnerability severity levels."""
+
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -115,6 +116,7 @@ class SeverityLevel:
 
 class ScanStatus:
     """Scan execution status values."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -124,6 +126,7 @@ class ScanStatus:
 
 class PipelineStatus:
     """CI/CD pipeline status values."""
+
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
@@ -133,6 +136,7 @@ class PipelineStatus:
 
 class AlertStatus:
     """Alert management status values."""
+
     OPEN = "open"
     IN_PROGRESS = "in_progress"
     RESOLVED = "resolved"
@@ -142,6 +146,7 @@ class AlertStatus:
 
 class ComplianceStatus:
     """Compliance check status values."""
+
     COMPLIANT = "compliant"
     NON_COMPLIANT = "non_compliant"
     WARNING = "warning"

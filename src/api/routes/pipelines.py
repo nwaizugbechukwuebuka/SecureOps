@@ -8,22 +8,23 @@ Author: Chukwuebuka Tobiloba Nwaizugbe
 Date: 2024
 """
 
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, HttpUrl
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy import select, func, and_, desc, or_
-from pydantic import BaseModel, Field, HttpUrl
 
 from ..database import get_db
-from ..models.user import User
 from ..models.pipeline import Pipeline, ScanJob
+from ..models.user import User
 from ..models.vulnerability import Vulnerability
 from ..services.pipeline_services import PipelineService
 from ..utils.config import settings
 from ..utils.logger import get_logger, log_api_request
-from ..utils.validators import validate_url, validate_pipeline_config
+from ..utils.validators import validate_pipeline_config, validate_url
 from .auth import get_current_user
 
 router = APIRouter()
@@ -55,7 +56,9 @@ class CreatePipelineRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     repository_url: str = Field(..., min_length=1)
     branch: str = Field(default="main", min_length=1, max_length=100)
-    ci_cd_platform: str = Field(..., regex="^(github|gitlab|azure_devops|jenkins|bitbucket)$")
+    ci_cd_platform: str = Field(
+        ..., regex="^(github|gitlab|azure_devops|jenkins|bitbucket)$"
+    )
     configuration: Dict[str, Any] = {}
     webhook_secret: Optional[str] = None
     scan_schedule: Optional[str] = None  # Cron expression
@@ -72,7 +75,9 @@ class UpdatePipelineRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    scanner_types: List[str] = Field(default=["dependency", "secret", "container", "policy"])
+    scanner_types: List[str] = Field(
+        default=["dependency", "secret", "container", "policy"]
+    )
     target_branch: Optional[str] = None
     scan_config: Dict[str, Any] = {}
     priority: str = Field(default="normal", regex="^(low|normal|high|urgent)$")
@@ -111,81 +116,73 @@ async def get_pipelines(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     status: Optional[str] = Query(None, regex="^(active|inactive|error|scanning)$"),
-    ci_cd_platform: Optional[str] = Query(None, regex="^(github|gitlab|azure_devops|jenkins|bitbucket)$"),
+    ci_cd_platform: Optional[str] = Query(
+        None, regex="^(github|gitlab|azure_devops|jenkins|bitbucket)$"
+    ),
     search: Optional[str] = Query(None, min_length=1),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Retrieve user's pipelines with filtering and pagination.
-    
+
     Returns list of pipelines owned by the current user
     with vulnerability counts and scan status.
     """
     log_api_request("GET", "/pipelines/", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         pipelines = await pipeline_service.get_user_pipelines(
             user_id=current_user.id,
             skip=skip,
             limit=limit,
             status=status,
             ci_cd_platform=ci_cd_platform,
-            search=search
+            search=search,
         )
-        
+
         logger.info(f"Retrieved {len(pipelines)} pipelines for user {current_user.id}")
         return pipelines
-        
+
     except Exception as e:
         logger.error(f"Error retrieving pipelines: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve pipelines"
-        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve pipelines")
 
 
 @router.get("/{pipeline_id}", response_model=PipelineResponse)
 async def get_pipeline(
     pipeline_id: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get specific pipeline by ID with detailed information.
-    
+
     Returns complete pipeline data including configuration,
     recent scan history, and vulnerability statistics.
     """
     log_api_request("GET", f"/pipelines/{pipeline_id}", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         logger.info(f"Retrieved pipeline {pipeline_id} for user {current_user.id}")
         return pipeline
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error retrieving pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve pipeline")
 
 
 @router.post("/", response_model=PipelineResponse)
@@ -193,48 +190,48 @@ async def create_pipeline(
     pipeline_request: CreatePipelineRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create new CI/CD pipeline for security monitoring.
-    
+
     Creates pipeline configuration, validates repository access,
     and optionally triggers initial security scan.
     """
     log_api_request("POST", "/pipelines/", current_user.id)
-    
+
     try:
         # Validate repository URL
-        url_validation = validate_url(pipeline_request.repository_url, ["http", "https", "git", "ssh"])
+        url_validation = validate_url(
+            pipeline_request.repository_url, ["http", "https", "git", "ssh"]
+        )
         if not url_validation.is_valid:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid repository URL: {', '.join(url_validation.errors)}"
+                detail=f"Invalid repository URL: {', '.join(url_validation.errors)}",
             )
-        
+
         # Validate pipeline configuration if provided
         if pipeline_request.configuration:
             config_validation = validate_pipeline_config(pipeline_request.configuration)
             if not config_validation.is_valid:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid configuration: {', '.join(config_validation.errors)}"
+                    detail=f"Invalid configuration: {', '.join(config_validation.errors)}",
                 )
-        
+
         pipeline_service = PipelineService(db)
-        
+
         # Check if pipeline with same repository already exists for user
         existing_pipeline = await pipeline_service.get_pipeline_by_repo(
-            repository_url=pipeline_request.repository_url,
-            user_id=current_user.id
+            repository_url=pipeline_request.repository_url, user_id=current_user.id
         )
-        
+
         if existing_pipeline:
             raise HTTPException(
-                status_code=400,
-                detail="Pipeline for this repository already exists"
+                status_code=400, detail="Pipeline for this repository already exists"
             )
-        
+
         # Create pipeline
         pipeline = await pipeline_service.create_pipeline(
             name=pipeline_request.name,
@@ -245,18 +242,17 @@ async def create_pipeline(
             configuration=pipeline_request.configuration,
             webhook_secret=pipeline_request.webhook_secret,
             scan_schedule=pipeline_request.scan_schedule,
-            owner_id=current_user.id
+            owner_id=current_user.id,
         )
-        
+
         # Queue initial scan if configured
         if pipeline_request.configuration.get("auto_scan_on_create", False):
             background_tasks.add_task(
-                pipeline_service.trigger_initial_scan,
-                pipeline.id
+                pipeline_service.trigger_initial_scan, pipeline.id
             )
-        
+
         logger.info(f"Created pipeline {pipeline.id} for user {current_user.id}")
-        
+
         # Return pipeline response
         return PipelineResponse(
             id=pipeline.id,
@@ -274,17 +270,14 @@ async def create_pipeline(
             high_count=0,
             created_at=pipeline.created_at,
             updated_at=pipeline.updated_at,
-            configuration=pipeline.configuration or {}
+            configuration=pipeline.configuration or {},
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating pipeline: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to create pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to create pipeline")
 
 
 @router.patch("/{pipeline_id}", response_model=PipelineResponse)
@@ -292,49 +285,47 @@ async def update_pipeline(
     pipeline_id: int,
     update_request: UpdatePipelineRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Update existing pipeline configuration.
-    
+
     Allows modifying pipeline settings, repository information,
     and scan configuration.
     """
     log_api_request("PATCH", f"/pipelines/{pipeline_id}", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         existing_pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not existing_pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Validate repository URL if being updated
         if update_request.repository_url:
-            url_validation = validate_url(update_request.repository_url, ["http", "https", "git", "ssh"])
+            url_validation = validate_url(
+                update_request.repository_url, ["http", "https", "git", "ssh"]
+            )
             if not url_validation.is_valid:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid repository URL: {', '.join(url_validation.errors)}"
+                    detail=f"Invalid repository URL: {', '.join(url_validation.errors)}",
                 )
-        
+
         # Validate configuration if being updated
         if update_request.configuration:
             config_validation = validate_pipeline_config(update_request.configuration)
             if not config_validation.is_valid:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid configuration: {', '.join(config_validation.errors)}"
+                    detail=f"Invalid configuration: {', '.join(config_validation.errors)}",
                 )
-        
+
         # Update pipeline
         updated_pipeline = await pipeline_service.update_pipeline(
             pipeline_id=pipeline_id,
@@ -344,65 +335,55 @@ async def update_pipeline(
             branch=update_request.branch,
             configuration=update_request.configuration,
             is_active=update_request.is_active,
-            scan_schedule=update_request.scan_schedule
+            scan_schedule=update_request.scan_schedule,
         )
-        
+
         logger.info(f"Updated pipeline {pipeline_id} for user {current_user.id}")
         return updated_pipeline
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to update pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to update pipeline")
 
 
 @router.delete("/{pipeline_id}")
 async def delete_pipeline(
     pipeline_id: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete pipeline and all associated data.
-    
+
     Permanently removes pipeline, scan history,
     and vulnerability records.
     """
     log_api_request("DELETE", f"/pipelines/{pipeline_id}", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Delete pipeline and associated data
         await pipeline_service.delete_pipeline(pipeline_id)
-        
+
         logger.info(f"Deleted pipeline {pipeline_id} for user {current_user.id}")
         return {"message": "Pipeline deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error deleting pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to delete pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to delete pipeline")
 
 
 @router.post("/{pipeline_id}/scan", response_model=ScanJobResponse)
@@ -411,46 +392,41 @@ async def trigger_scan(
     scan_request: ScanRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Trigger security scan for pipeline.
-    
+
     Starts comprehensive security scan using configured
     scanners and returns scan job information.
     """
     log_api_request("POST", f"/pipelines/{pipeline_id}/scan", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership and status
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         if not pipeline.is_active:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot scan inactive pipeline"
-            )
-        
+            raise HTTPException(status_code=400, detail="Cannot scan inactive pipeline")
+
         # Validate scanner types
         valid_scanners = ["dependency", "secret", "container", "policy"]
-        invalid_scanners = [s for s in scan_request.scanner_types if s not in valid_scanners]
+        invalid_scanners = [
+            s for s in scan_request.scanner_types if s not in valid_scanners
+        ]
         if invalid_scanners:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid scanner types: {', '.join(invalid_scanners)}"
+                detail=f"Invalid scanner types: {', '.join(invalid_scanners)}",
             )
-        
+
         # Create scan job
         scan_job = await pipeline_service.create_scan_job(
             pipeline_id=pipeline_id,
@@ -458,17 +434,14 @@ async def trigger_scan(
             target_branch=scan_request.target_branch or pipeline.branch,
             scan_config=scan_request.scan_config,
             priority=scan_request.priority,
-            triggered_by=current_user.id
+            triggered_by=current_user.id,
         )
-        
+
         # Queue scan execution
-        background_tasks.add_task(
-            pipeline_service.execute_scan_job,
-            scan_job.id
-        )
-        
+        background_tasks.add_task(pipeline_service.execute_scan_job, scan_job.id)
+
         logger.info(f"Triggered scan {scan_job.id} for pipeline {pipeline_id}")
-        
+
         return ScanJobResponse(
             id=scan_job.id,
             pipeline_id=scan_job.pipeline_id,
@@ -485,17 +458,14 @@ async def trigger_scan(
             low_count=0,
             scan_config=scan_job.configuration or {},
             error_message=scan_job.error_message,
-            results_summary=scan_job.results_summary or {}
+            results_summary=scan_job.results_summary or {},
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error triggering scan for pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to trigger scan"
-        )
+        raise HTTPException(status_code=500, detail="Failed to trigger scan")
 
 
 @router.get("/{pipeline_id}/scans", response_model=List[ScanJobResponse])
@@ -503,52 +473,46 @@ async def get_scan_history(
     pipeline_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    status: Optional[str] = Query(None, regex="^(pending|running|completed|failed|cancelled)$"),
+    status: Optional[str] = Query(
+        None, regex="^(pending|running|completed|failed|cancelled)$"
+    ),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get scan history for pipeline.
-    
+
     Returns list of scan jobs with results and statistics
     for the specified pipeline.
     """
     log_api_request("GET", f"/pipelines/{pipeline_id}/scans", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Get scan history
         scan_jobs = await pipeline_service.get_scan_history(
-            pipeline_id=pipeline_id,
-            skip=skip,
-            limit=limit,
-            status=status
+            pipeline_id=pipeline_id, skip=skip, limit=limit, status=status
         )
-        
+
         logger.info(f"Retrieved {len(scan_jobs)} scan jobs for pipeline {pipeline_id}")
         return scan_jobs
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving scan history for pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve scan history"
+        logger.error(
+            f"Error retrieving scan history for pipeline {pipeline_id}: {str(e)}"
         )
+        raise HTTPException(status_code=500, detail="Failed to retrieve scan history")
 
 
 @router.get("/{pipeline_id}/vulnerabilities")
@@ -557,34 +521,32 @@ async def get_pipeline_vulnerabilities(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     severity: Optional[str] = Query(None, regex="^(low|medium|high|critical)$"),
-    status: Optional[str] = Query(None, regex="^(open|acknowledged|resolved|false_positive)$"),
+    status: Optional[str] = Query(
+        None, regex="^(open|acknowledged|resolved|false_positive)$"
+    ),
     scanner_type: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get vulnerabilities for specific pipeline.
-    
+
     Returns filtered list of vulnerabilities found
     in the pipeline's security scans.
     """
     log_api_request("GET", f"/pipelines/{pipeline_id}/vulnerabilities", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Get vulnerabilities
         vulnerabilities = await pipeline_service.get_pipeline_vulnerabilities(
             pipeline_id=pipeline_id,
@@ -592,19 +554,22 @@ async def get_pipeline_vulnerabilities(
             limit=limit,
             severity=severity,
             status=status,
-            scanner_type=scanner_type
+            scanner_type=scanner_type,
         )
-        
-        logger.info(f"Retrieved {len(vulnerabilities)} vulnerabilities for pipeline {pipeline_id}")
+
+        logger.info(
+            f"Retrieved {len(vulnerabilities)} vulnerabilities for pipeline {pipeline_id}"
+        )
         return vulnerabilities
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving vulnerabilities for pipeline {pipeline_id}: {str(e)}")
+        logger.error(
+            f"Error retrieving vulnerabilities for pipeline {pipeline_id}: {str(e)}"
+        )
         raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve vulnerabilities"
+            status_code=500, detail="Failed to retrieve vulnerabilities"
         )
 
 
@@ -614,30 +579,27 @@ async def handle_webhook(
     webhook_payload: WebhookPayload,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Handle CI/CD webhook events.
-    
+
     Processes webhook events from CI/CD platforms
     and triggers appropriate security scans.
     """
     log_api_request("POST", f"/pipelines/{pipeline_id}/webhook", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Get pipeline (webhooks might not have user context)
         pipeline_query = select(Pipeline).where(Pipeline.id == pipeline_id)
         result = await db.execute(pipeline_query)
         pipeline = result.scalar_one_or_none()
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Process webhook event
         scan_triggered = await pipeline_service.process_webhook_event(
             pipeline_id=pipeline_id,
@@ -647,26 +609,25 @@ async def handle_webhook(
                 "branch": webhook_payload.branch,
                 "commit": webhook_payload.commit,
                 "pull_request": webhook_payload.pull_request,
-                "workflow": webhook_payload.workflow
-            }
+                "workflow": webhook_payload.workflow,
+            },
         )
-        
-        logger.info(f"Processed webhook for pipeline {pipeline_id}, scan_triggered: {scan_triggered}")
-        
+
+        logger.info(
+            f"Processed webhook for pipeline {pipeline_id}, scan_triggered: {scan_triggered}"
+        )
+
         return {
             "message": "Webhook processed successfully",
             "scan_triggered": scan_triggered,
-            "pipeline_id": pipeline_id
+            "pipeline_id": pipeline_id,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing webhook for pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to process webhook"
-        )
+        raise HTTPException(status_code=500, detail="Failed to process webhook")
 
 
 @router.get("/{pipeline_id}/statistics")
@@ -674,47 +635,43 @@ async def get_pipeline_statistics(
     pipeline_id: int,
     days_back: int = Query(30, ge=1, le=365),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get pipeline statistics and metrics.
-    
+
     Returns comprehensive statistics including scan frequency,
     vulnerability trends, and security posture metrics.
     """
     log_api_request("GET", f"/pipelines/{pipeline_id}/statistics", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Get statistics
         statistics = await pipeline_service.get_pipeline_statistics(
-            pipeline_id=pipeline_id,
-            days_back=days_back
+            pipeline_id=pipeline_id, days_back=days_back
         )
-        
+
         logger.info(f"Retrieved statistics for pipeline {pipeline_id}")
         return statistics
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving statistics for pipeline {pipeline_id}: {str(e)}")
+        logger.error(
+            f"Error retrieving statistics for pipeline {pipeline_id}: {str(e)}"
+        )
         raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve pipeline statistics"
+            status_code=500, detail="Failed to retrieve pipeline statistics"
         )
 
 
@@ -722,87 +679,73 @@ async def get_pipeline_statistics(
 async def enable_pipeline(
     pipeline_id: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Enable pipeline for monitoring and scanning.
-    
+
     Activates pipeline and resumes scheduled scans
     and webhook processing.
     """
     log_api_request("POST", f"/pipelines/{pipeline_id}/enable", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Enable pipeline
         await pipeline_service.enable_pipeline(pipeline_id)
-        
+
         logger.info(f"Enabled pipeline {pipeline_id}")
         return {"message": "Pipeline enabled successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error enabling pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to enable pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to enable pipeline")
 
 
 @router.post("/{pipeline_id}/disable")
 async def disable_pipeline(
     pipeline_id: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Disable pipeline monitoring and scanning.
-    
+
     Deactivates pipeline and stops scheduled scans
     and webhook processing.
     """
     log_api_request("POST", f"/pipelines/{pipeline_id}/disable", current_user.id)
-    
+
     try:
         pipeline_service = PipelineService(db)
-        
+
         # Verify pipeline ownership
         pipeline = await pipeline_service.get_pipeline_by_id(
-            pipeline_id=pipeline_id,
-            user_id=current_user.id
+            pipeline_id=pipeline_id, user_id=current_user.id
         )
-        
+
         if not pipeline:
-            raise HTTPException(
-                status_code=404,
-                detail="Pipeline not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+
         # Disable pipeline
         await pipeline_service.disable_pipeline(pipeline_id)
-        
+
         logger.info(f"Disabled pipeline {pipeline_id}")
         return {"message": "Pipeline disabled successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error disabling pipeline {pipeline_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to disable pipeline"
-        )
+        raise HTTPException(status_code=500, detail="Failed to disable pipeline")

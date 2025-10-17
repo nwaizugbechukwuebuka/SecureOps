@@ -1,14 +1,17 @@
 """
 Logging configuration and utilities for SecureOps.
 """
-import os
-import sys
+
 import json
 import logging
-import structlog
+import os
+import sys
 from datetime import datetime
-from typing import Any, Dict, Optional
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+import structlog
+
 from .config import get_settings
 
 # Get settings
@@ -17,22 +20,22 @@ settings = get_settings()
 
 def configure_logging():
     """Configure structured logging with structlog and standard library."""
-    
+
     # Create logs directory if it doesn't exist
     if settings.log_file:
         log_path = Path(settings.log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Configure standard library logging
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
         format="%(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            *([logging.FileHandler(settings.log_file)] if settings.log_file else [])
-        ]
+            *([logging.FileHandler(settings.log_file)] if settings.log_file else []),
+        ],
     )
-    
+
     # Configure structlog processors
     processors = [
         structlog.contextvars.merge_contextvars,
@@ -42,13 +45,13 @@ def configure_logging():
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]
-    
+
     # Add appropriate renderer based on format preference
     if settings.log_format == "json":
         processors.append(structlog.processors.JSONRenderer())
     else:
         processors.append(structlog.dev.ConsoleRenderer(colors=True))
-    
+
     # Configure structlog
     structlog.configure(
         processors=processors,
@@ -64,27 +67,27 @@ def configure_logging():
 def get_logger(name: Optional[str] = None) -> structlog.BoundLogger:
     """
     Get a configured logger instance.
-    
+
     Args:
         name: Logger name (defaults to caller's module)
-        
+
     Returns:
         structlog.BoundLogger: Configured logger instance
     """
     if name is None:
         # Get caller's module name
         frame = sys._getframe(1)
-        name = frame.f_globals.get('__name__', 'secureops')
-    
+        name = frame.f_globals.get("__name__", "secureops")
+
     return structlog.get_logger(name)
 
 
 class SecurityLogger:
     """Specialized logger for security events and audit trails."""
-    
+
     def __init__(self):
         self.logger = get_logger("security")
-    
+
     def vulnerability_detected(
         self,
         vulnerability_id: str,
@@ -103,7 +106,7 @@ class SecurityLogger:
             event_type="security.vulnerability_detected",
             **kwargs
         )
-    
+
     def vulnerability_resolved(
         self,
         vulnerability_id: str,
@@ -120,7 +123,7 @@ class SecurityLogger:
             event_type="security.vulnerability_resolved",
             **kwargs
         )
-    
+
     def alert_created(
         self,
         alert_id: int,
@@ -139,7 +142,7 @@ class SecurityLogger:
             event_type="security.alert_created",
             **kwargs
         )
-    
+
     def scan_completed(
         self,
         scan_id: str,
@@ -160,7 +163,7 @@ class SecurityLogger:
             event_type="security.scan_completed",
             **kwargs
         )
-    
+
     def scan_failed(
         self,
         scan_id: str,
@@ -179,7 +182,7 @@ class SecurityLogger:
             event_type="security.scan_failed",
             **kwargs
         )
-    
+
     def compliance_violation(
         self,
         rule_id: str,
@@ -198,7 +201,7 @@ class SecurityLogger:
             event_type="security.compliance_violation",
             **kwargs
         )
-    
+
     def policy_violation(
         self,
         policy_id: str,
@@ -221,10 +224,10 @@ class SecurityLogger:
 
 class AuditLogger:
     """Specialized logger for user actions and system events."""
-    
+
     def __init__(self):
         self.logger = get_logger("audit")
-    
+
     def user_action(
         self,
         user_id: Optional[int],
@@ -251,7 +254,7 @@ class AuditLogger:
             details=details or {},
             event_type="audit.user_action",
         )
-    
+
     def login_attempt(
         self,
         username: str,
@@ -271,7 +274,7 @@ class AuditLogger:
             failure_reason=failure_reason,
             event_type="audit.login_attempt",
         )
-    
+
     def permission_denied(
         self,
         user_id: Optional[int],
@@ -292,7 +295,7 @@ class AuditLogger:
             ip_address=ip_address,
             event_type="audit.permission_denied",
         )
-    
+
     def configuration_changed(
         self,
         user_id: int,
@@ -317,10 +320,10 @@ class AuditLogger:
 
 class PerformanceLogger:
     """Specialized logger for performance monitoring."""
-    
+
     def __init__(self):
         self.logger = get_logger("performance")
-    
+
     def request_duration(
         self,
         method: str,
@@ -340,7 +343,7 @@ class PerformanceLogger:
             user_id=user_id,
             event_type="performance.request_duration",
         )
-    
+
     def database_query_duration(
         self,
         query_type: str,
@@ -358,7 +361,7 @@ class PerformanceLogger:
             row_count=row_count,
             event_type="performance.database_query",
         )
-    
+
     def scan_performance(
         self,
         scanner: str,
@@ -382,50 +385,50 @@ class PerformanceLogger:
 
 class LoggerMiddleware:
     """Middleware for automatic request logging."""
-    
+
     def __init__(self, app):
         self.app = app
         self.audit_logger = AuditLogger()
         self.performance_logger = PerformanceLogger()
-    
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        
+
         start_time = datetime.utcnow()
-        
+
         # Extract request information
         method = scope["method"]
         path = scope["path"]
         headers = dict(scope["headers"])
         client_ip = None
         user_agent = None
-        
+
         if b"x-forwarded-for" in headers:
             client_ip = headers[b"x-forwarded-for"].decode()
         elif scope.get("client"):
             client_ip = scope["client"][0]
-        
+
         if b"user-agent" in headers:
             user_agent = headers[b"user-agent"].decode()
-        
+
         # Wrap send to capture response
         status_code = None
-        
+
         async def send_wrapper(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
             await send(message)
-        
+
         # Process request
         await self.app(scope, receive, send_wrapper)
-        
+
         # Calculate duration
         end_time = datetime.utcnow()
         duration_ms = (end_time - start_time).total_seconds() * 1000
-        
+
         # Log performance
         if status_code:
             self.performance_logger.request_duration(
@@ -450,10 +453,10 @@ def setup_sentry():
     if settings.sentry_dsn:
         try:
             import sentry_sdk
-            from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
             from sentry_sdk.integrations.fastapi import FastApiIntegration
+            from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
             from sentry_sdk.integrations.starlette import StarletteIntegration
-            
+
             sentry_sdk.init(
                 dsn=settings.sentry_dsn,
                 environment=settings.sentry_environment,
@@ -481,7 +484,7 @@ def filter_sensitive_data(event, hint):
         for header in sensitive_headers:
             if header in headers:
                 headers[header] = "[FILTERED]"
-    
+
     # Remove sensitive form data
     if "request" in event and "data" in event["request"]:
         sensitive_fields = ["password", "token", "secret", "key"]
@@ -490,7 +493,7 @@ def filter_sensitive_data(event, hint):
             for field in sensitive_fields:
                 if field in data:
                     data[field] = "[FILTERED]"
-    
+
     return event
 
 
@@ -519,15 +522,15 @@ def log_shutdown_info():
 # Context managers for logging
 class LogContext:
     """Context manager for adding structured logging context."""
-    
+
     def __init__(self, **kwargs):
         self.context = kwargs
         self.token = None
-    
+
     def __enter__(self):
         self.token = structlog.contextvars.bind_contextvars(**self.context)
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.token:
             structlog.contextvars.unbind_contextvars(self.token)
@@ -536,10 +539,11 @@ class LogContext:
 # Decorators for automatic logging
 def log_function_call(logger_instance=None):
     """Decorator to automatically log function calls."""
+
     def decorator(func):
         def wrapper(*args, **kwargs):
             log = logger_instance or get_logger(func.__module__)
-            
+
             try:
                 log.debug(
                     "function_call_start",
@@ -547,16 +551,16 @@ def log_function_call(logger_instance=None):
                     args_count=len(args),
                     kwargs_keys=list(kwargs.keys()),
                 )
-                
+
                 result = func(*args, **kwargs)
-                
+
                 log.debug(
                     "function_call_success",
                     function=func.__name__,
                 )
-                
+
                 return result
-                
+
             except Exception as e:
                 log.error(
                     "function_call_error",
@@ -565,17 +569,19 @@ def log_function_call(logger_instance=None):
                     error_type=type(e).__name__,
                 )
                 raise
-        
+
         return wrapper
+
     return decorator
 
 
 def log_async_function_call(logger_instance=None):
     """Decorator to automatically log async function calls."""
+
     def decorator(func):
         async def wrapper(*args, **kwargs):
             log = logger_instance or get_logger(func.__module__)
-            
+
             try:
                 log.debug(
                     "async_function_call_start",
@@ -583,16 +589,16 @@ def log_async_function_call(logger_instance=None):
                     args_count=len(args),
                     kwargs_keys=list(kwargs.keys()),
                 )
-                
+
                 result = await func(*args, **kwargs)
-                
+
                 log.debug(
                     "async_function_call_success",
                     function=func.__name__,
                 )
-                
+
                 return result
-                
+
             except Exception as e:
                 log.error(
                     "async_function_call_error",
@@ -601,8 +607,9 @@ def log_async_function_call(logger_instance=None):
                     error_type=type(e).__name__,
                 )
                 raise
-        
+
         return wrapper
+
     return decorator
 
 

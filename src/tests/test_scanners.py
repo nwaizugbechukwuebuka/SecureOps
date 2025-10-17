@@ -1,19 +1,21 @@
-import pytest
 import asyncio
-from unittest.mock import Mock, patch, AsyncMock, mock_open
-from datetime import datetime, timedelta
 import json
-import tempfile
 import os
+import tempfile
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, Mock, mock_open, patch
 
-from src.scanners.trivy_scanner import TrivyScanner
-from src.scanners.safety_scanner import SafetyScanner
+import pytest
+
 from src.scanners.bandit_scanner import BanditScanner
-from src.scanners.secret_scanner import SecretScanner
+from src.scanners.common import ScanResult, Vulnerability
 from src.scanners.dependency_scanner import DependencyScanner
 from src.scanners.docker_scanner import DockerScanner
 from src.scanners.policy_checker import PolicyChecker
-from src.scanners.common import ScanResult, Vulnerability
+from src.scanners.safety_scanner import SafetyScanner
+from src.scanners.secret_scanner import SecretScanner
+from src.scanners.trivy_scanner import TrivyScanner
+
 
 @pytest.fixture
 def sample_dockerfile():
@@ -28,6 +30,7 @@ EXPOSE 3000
 CMD ["npm", "start"]
 """
 
+
 @pytest.fixture
 def sample_requirements_txt():
     """Sample requirements.txt for testing"""
@@ -38,21 +41,17 @@ django==3.1.0
 numpy==1.19.5
 """
 
+
 @pytest.fixture
 def sample_package_json():
     """Sample package.json for testing"""
     return {
         "name": "test-app",
         "version": "1.0.0",
-        "dependencies": {
-            "express": "4.17.1",
-            "lodash": "4.17.20",
-            "moment": "2.29.1"
-        },
-        "devDependencies": {
-            "jest": "26.6.3"
-        }
+        "dependencies": {"express": "4.17.1", "lodash": "4.17.20", "moment": "2.29.1"},
+        "devDependencies": {"jest": "26.6.3"},
     }
+
 
 @pytest.fixture
 def sample_python_code():
@@ -79,6 +78,7 @@ import random
 secret_key = random.randint(1000, 9999)
 """
 
+
 class TestTrivyScanner:
     """Test Trivy vulnerability scanner"""
 
@@ -101,19 +101,19 @@ class TestTrivyScanner:
                             "FixedVersion": "1.1.1l",
                             "Severity": "HIGH",
                             "Title": "OpenSSL vulnerability",
-                            "Description": "Buffer overflow in OpenSSL"
+                            "Description": "Buffer overflow in OpenSSL",
                         }
-                    ]
+                    ],
                 }
             ]
         }
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_result)
-            
+
             result = await trivy_scanner.scan_image("node:14-alpine")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
             assert result.vulnerabilities[0].id == "CVE-2023-1234"
@@ -133,19 +133,19 @@ class TestTrivyScanner:
                             "InstalledVersion": "4.17.20",
                             "FixedVersion": "4.17.21",
                             "Severity": "MEDIUM",
-                            "Title": "Prototype pollution vulnerability"
+                            "Title": "Prototype pollution vulnerability",
                         }
-                    ]
+                    ],
                 }
             ]
         }
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_result)
-            
+
             result = await trivy_scanner.scan_filesystem("/app")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
             assert result.vulnerabilities[0].package == "lodash"
@@ -153,14 +153,15 @@ class TestTrivyScanner:
     @pytest.mark.asyncio
     async def test_scan_failure(self, trivy_scanner):
         """Test scanner failure handling"""
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 1
             mock_run.return_value.stderr = "Trivy scan failed"
-            
+
             result = await trivy_scanner.scan_image("invalid:image")
-            
+
             assert result.success is False
             assert "Trivy scan failed" in result.error
+
 
 class TestSafetyScanner:
     """Test Safety Python dependency scanner"""
@@ -170,7 +171,9 @@ class TestSafetyScanner:
         return SafetyScanner()
 
     @pytest.mark.asyncio
-    async def test_scan_requirements_success(self, safety_scanner, sample_requirements_txt):
+    async def test_scan_requirements_success(
+        self, safety_scanner, sample_requirements_txt
+    ):
         """Test successful requirements.txt scanning"""
         mock_output = """
 [
@@ -184,14 +187,15 @@ class TestSafetyScanner:
 ]
 """
 
-        with patch('subprocess.run') as mock_run, \
-             patch('builtins.open', mock_open(read_data=sample_requirements_txt)):
-            
+        with patch("subprocess.run") as mock_run, patch(
+            "builtins.open", mock_open(read_data=sample_requirements_txt)
+        ):
+
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = mock_output
-            
+
             result = await safety_scanner.scan_requirements("requirements.txt")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
             assert result.vulnerabilities[0].package == "flask"
@@ -211,26 +215,27 @@ class TestSafetyScanner:
 ]
 """
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = mock_output
-            
+
             result = await safety_scanner.scan_environment("/path/to/venv")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
 
     @pytest.mark.asyncio
     async def test_scan_no_vulnerabilities(self, safety_scanner):
         """Test scanning with no vulnerabilities found"""
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "[]"
-            
+
             result = await safety_scanner.scan_requirements("requirements.txt")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 0
+
 
 class TestBanditScanner:
     """Test Bandit Python security scanner"""
@@ -252,29 +257,30 @@ class TestBanditScanner:
                     "line_number": 5,
                     "line_range": [5],
                     "test_id": "B602",
-                    "test_name": "subprocess_popen_with_shell_equals_true"
+                    "test_name": "subprocess_popen_with_shell_equals_true",
                 },
                 {
                     "filename": "test.py",
-                    "issue_confidence": "HIGH", 
+                    "issue_confidence": "HIGH",
                     "issue_severity": "MEDIUM",
                     "issue_text": "Hardcoded password",
                     "line_number": 9,
                     "line_range": [9],
                     "test_id": "B105",
-                    "test_name": "hardcoded_password_string"
-                }
+                    "test_name": "hardcoded_password_string",
+                },
             ]
         }
 
-        with patch('subprocess.run') as mock_run, \
-             patch('builtins.open', mock_open(read_data=sample_python_code)):
-            
+        with patch("subprocess.run") as mock_run, patch(
+            "builtins.open", mock_open(read_data=sample_python_code)
+        ):
+
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_result)
-            
+
             result = await bandit_scanner.scan_file("test.py")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 2
             assert result.vulnerabilities[0].severity == "HIGH"
@@ -292,39 +298,40 @@ class TestBanditScanner:
                     "issue_text": "Use of assert detected",
                     "line_number": 10,
                     "test_id": "B101",
-                    "test_name": "assert_used"
+                    "test_name": "assert_used",
                 }
             ]
         }
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_result)
-            
+
             result = await bandit_scanner.scan_directory("/app")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
 
     @pytest.mark.asyncio
     async def test_custom_config(self, bandit_scanner):
         """Test scanning with custom configuration"""
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = '{"results": []}'
-            
+
             config = {
                 "exclude_dirs": ["tests", "migrations"],
-                "skip_tests": ["B101", "B601"]
+                "skip_tests": ["B101", "B601"],
             }
-            
+
             result = await bandit_scanner.scan_directory("/app", config=config)
-            
+
             assert result.success is True
             # Verify config was applied
             call_args = mock_run.call_args[0][0]
             assert "--exclude" in call_args
             assert "--skip" in call_args
+
 
 class TestSecretScanner:
     """Test secret detection scanner"""
@@ -344,24 +351,24 @@ GITHUB_TOKEN=ghp_1234567890abcdef
 API_KEY=sk-1234567890abcdef
 """
 
-        with patch('builtins.open', mock_open(read_data=file_content)):
+        with patch("builtins.open", mock_open(read_data=file_content)):
             result = await secret_scanner.scan_file("config.py")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) >= 3  # Should find multiple secrets
 
     @pytest.mark.asyncio
     async def test_scan_git_repository(self, secret_scanner):
         """Test scanning git repository for secrets"""
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = """
 config.py:3:AWS_SECRET_KEY=AKIAIOSFODNN7EXAMPLE
 app.py:15:GITHUB_TOKEN=ghp_1234567890abcdef
 """
-            
+
             result = await secret_scanner.scan_repository("/repo")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 2
 
@@ -372,12 +379,13 @@ app.py:15:GITHUB_TOKEN=ghp_1234567890abcdef
             "AWS_ACCESS_KEY": "AKIAIOSFODNN7EXAMPLE",
             "PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----",
             "JWT_TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-            "PASSWORD": "password123"
+            "PASSWORD": "password123",
         }
 
         for secret_type, secret_value in test_patterns.items():
             found = secret_scanner._detect_secret_pattern(secret_value)
             assert found is True, f"Failed to detect {secret_type}"
+
 
 class TestDependencyScanner:
     """Test dependency vulnerability scanner"""
@@ -396,19 +404,20 @@ class TestDependencyScanner:
                     "via": ["CVE-2020-8203"],
                     "effects": [],
                     "range": ">=1.0.0 <4.17.21",
-                    "nodes": ["node_modules/lodash"]
+                    "nodes": ["node_modules/lodash"],
                 }
             }
         }
 
-        with patch('subprocess.run') as mock_run, \
-             patch('builtins.open', mock_open(read_data=json.dumps(sample_package_json))):
-            
+        with patch("subprocess.run") as mock_run, patch(
+            "builtins.open", mock_open(read_data=json.dumps(sample_package_json))
+        ):
+
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_audit_result)
-            
+
             result = await dependency_scanner.scan_npm("package.json")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
             assert result.vulnerabilities[0].package == "lodash"
@@ -416,7 +425,7 @@ class TestDependencyScanner:
     @pytest.mark.asyncio
     async def test_scan_python_dependencies(self, dependency_scanner):
         """Test scanning Python dependencies"""
-        with patch.object(SafetyScanner, 'scan_requirements') as mock_safety:
+        with patch.object(SafetyScanner, "scan_requirements") as mock_safety:
             mock_safety.return_value = ScanResult(
                 success=True,
                 vulnerabilities=[
@@ -425,13 +434,13 @@ class TestDependencyScanner:
                         package="flask",
                         version="1.1.4",
                         severity="HIGH",
-                        description="XSS vulnerability"
+                        description="XSS vulnerability",
                     )
-                ]
+                ],
             )
-            
+
             result = await dependency_scanner.scan_python("requirements.txt")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
 
@@ -446,20 +455,21 @@ class TestDependencyScanner:
                         "packageName": "symfony/symfony",
                         "remoteId": "CVE-2021-12345",
                         "title": "Symfony vulnerability",
-                        "link": "https://symfony.com/cve-2021-12345"
+                        "link": "https://symfony.com/cve-2021-12345",
                     }
                 ]
             }
         }
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(mock_security_result)
-            
+
             result = await dependency_scanner.scan_composer("composer.json")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
+
 
 class TestDockerScanner:
     """Test Docker security scanner"""
@@ -471,9 +481,9 @@ class TestDockerScanner:
     @pytest.mark.asyncio
     async def test_scan_dockerfile(self, docker_scanner, sample_dockerfile):
         """Test Dockerfile security scanning"""
-        with patch('builtins.open', mock_open(read_data=sample_dockerfile)):
+        with patch("builtins.open", mock_open(read_data=sample_dockerfile)):
             result = await docker_scanner.scan_dockerfile("Dockerfile")
-            
+
             assert result.success is True
             # Should detect some issues like running as root, etc.
             assert len(result.vulnerabilities) >= 0
@@ -481,7 +491,7 @@ class TestDockerScanner:
     @pytest.mark.asyncio
     async def test_scan_docker_image(self, docker_scanner):
         """Test Docker image scanning"""
-        with patch.object(TrivyScanner, 'scan_image') as mock_trivy:
+        with patch.object(TrivyScanner, "scan_image") as mock_trivy:
             mock_trivy.return_value = ScanResult(
                 success=True,
                 vulnerabilities=[
@@ -490,13 +500,13 @@ class TestDockerScanner:
                         package="openssl",
                         version="1.1.1k",
                         severity="HIGH",
-                        description="OpenSSL vulnerability"
+                        description="OpenSSL vulnerability",
                     )
-                ]
+                ],
             )
-            
+
             result = await docker_scanner.scan_image("node:14-alpine")
-            
+
             assert result.success is True
             assert len(result.vulnerabilities) == 1
 
@@ -511,9 +521,10 @@ COPY . .
 """
 
         issues = docker_scanner._check_dockerfile_practices(bad_dockerfile)
-        
+
         assert len(issues) > 0
         # Should flag issues like using latest tag, running as root, etc.
+
 
 class TestPolicyChecker:
     """Test security policy checker"""
@@ -533,14 +544,14 @@ class TestPolicyChecker:
                         id="XSS-001",
                         severity="HIGH",
                         description="Cross-site scripting vulnerability",
-                        category="injection"
+                        category="injection",
                     )
-                ]
+                ],
             )
         ]
 
         policy_result = await policy_checker.check_owasp_compliance(scan_results)
-        
+
         assert policy_result.success is True
         assert "A03_2021" in policy_result.violations  # Injection category
 
@@ -550,55 +561,43 @@ class TestPolicyChecker:
         custom_policies = {
             "max_critical_vulns": 0,
             "max_high_vulns": 2,
-            "banned_packages": ["debug", "lodash"]
+            "banned_packages": ["debug", "lodash"],
         }
 
         scan_results = [
             ScanResult(
                 success=True,
                 vulnerabilities=[
-                    Vulnerability(
-                        id="CVE-001",
-                        severity="CRITICAL",
-                        package="debug"
-                    ),
-                    Vulnerability(
-                        id="CVE-002", 
-                        severity="HIGH",
-                        package="lodash"
-                    )
-                ]
+                    Vulnerability(id="CVE-001", severity="CRITICAL", package="debug"),
+                    Vulnerability(id="CVE-002", severity="HIGH", package="lodash"),
+                ],
             )
         ]
 
         policy_result = await policy_checker.check_custom_policies(
             scan_results, custom_policies
         )
-        
+
         assert policy_result.success is False
         assert len(policy_result.violations) >= 2  # Critical vuln + banned package
 
     @pytest.mark.asyncio
     async def test_severity_thresholds(self, policy_checker):
         """Test severity threshold policies"""
-        thresholds = {
-            "critical": 0,
-            "high": 1,
-            "medium": 5,
-            "low": 10
-        }
+        thresholds = {"critical": 0, "high": 1, "medium": 5, "low": 10}
 
         vulnerabilities = [
             Vulnerability(id="1", severity="HIGH"),
             Vulnerability(id="2", severity="HIGH"),
-            Vulnerability(id="3", severity="MEDIUM")
+            Vulnerability(id="3", severity="MEDIUM"),
         ]
 
         violations = policy_checker._check_severity_thresholds(
             vulnerabilities, thresholds
         )
-        
+
         assert len(violations) > 0  # Should violate high threshold
+
 
 class TestScannerIntegration:
     """Test scanner integration and orchestration"""
@@ -606,26 +605,20 @@ class TestScannerIntegration:
     @pytest.mark.asyncio
     async def test_multi_scanner_execution(self):
         """Test running multiple scanners together"""
-        scanners = [
-            TrivyScanner(),
-            SafetyScanner(), 
-            BanditScanner(),
-            SecretScanner()
-        ]
+        scanners = [TrivyScanner(), SafetyScanner(), BanditScanner(), SecretScanner()]
 
         results = []
         for scanner in scanners:
-            with patch.object(scanner, 'scan') as mock_scan:
+            with patch.object(scanner, "scan") as mock_scan:
                 mock_scan.return_value = ScanResult(
                     success=True,
                     vulnerabilities=[
                         Vulnerability(
-                            id=f"{scanner.__class__.__name__}-001",
-                            severity="MEDIUM"
+                            id=f"{scanner.__class__.__name__}-001", severity="MEDIUM"
                         )
-                    ]
+                    ],
                 )
-                
+
                 result = await scanner.scan("/test/path")
                 results.append(result)
 
@@ -640,15 +633,12 @@ class TestScannerIntegration:
                 success=True,
                 vulnerabilities=[
                     Vulnerability(id="1", severity="HIGH"),
-                    Vulnerability(id="2", severity="MEDIUM")
-                ]
+                    Vulnerability(id="2", severity="MEDIUM"),
+                ],
             ),
             ScanResult(
-                success=True,
-                vulnerabilities=[
-                    Vulnerability(id="3", severity="LOW")
-                ]
-            )
+                success=True, vulnerabilities=[Vulnerability(id="3", severity="LOW")]
+            ),
         ]
 
         # Aggregate results
@@ -669,14 +659,15 @@ class TestScannerIntegration:
     async def test_scan_timeout_handling(self):
         """Test scanner timeout handling"""
         scanner = TrivyScanner()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             # Simulate timeout
             import subprocess
+
             mock_run.side_effect = subprocess.TimeoutExpired("trivy", 30)
-            
+
             result = await scanner.scan_image("test:image", timeout=30)
-            
+
             assert result.success is False
             assert "timeout" in result.error.lower()
 
@@ -685,28 +676,26 @@ class TestScannerIntegration:
         """Test scanner error recovery and fallback"""
         primary_scanner = TrivyScanner()
         fallback_scanner = SafetyScanner()
-        
-        with patch.object(primary_scanner, 'scan_image') as mock_primary, \
-             patch.object(fallback_scanner, 'scan_requirements') as mock_fallback:
-            
+
+        with patch.object(primary_scanner, "scan_image") as mock_primary, patch.object(
+            fallback_scanner, "scan_requirements"
+        ) as mock_fallback:
+
             # Primary scanner fails
             mock_primary.return_value = ScanResult(
-                success=False,
-                error="Scanner failed"
+                success=False, error="Scanner failed"
             )
-            
+
             # Fallback succeeds
-            mock_fallback.return_value = ScanResult(
-                success=True,
-                vulnerabilities=[]
-            )
-            
+            mock_fallback.return_value = ScanResult(success=True, vulnerabilities=[])
+
             # Try primary first, then fallback
             result = await primary_scanner.scan_image("test:image")
             if not result.success:
                 result = await fallback_scanner.scan_requirements("requirements.txt")
-            
+
             assert result.success is True
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
